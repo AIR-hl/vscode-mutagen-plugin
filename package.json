@@ -1,0 +1,349 @@
+{
+  "name": "remote-mutagen",
+  "displayName": "Remote-Mutagen",
+  "description": "Remote-style management for Mutagen file synchronization sessions",
+  "version": "0.1.0",
+  "publisher": "AIR-hl",
+  "icon": "assets/vscode-mutagen-plugin-icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "mutagen",
+    "sync",
+    "remote",
+    "file synchronization",
+    "ssh"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mutagen-explorer",
+          "title": "Remote-Mutagen",
+          "icon": "resources/icons/mutagen.svg"
+        }
+      ]
+    },
+    "views": {
+      "mutagen-explorer": [
+        {
+          "id": "mutagen.sessions",
+          "name": "Sync Sessions"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "mutagen.sessions",
+        "contents": "No Mutagen sync sessions found.\n[Create New Session](command:mutagen.createSession)\n[Refresh](command:mutagen.refresh)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mutagen.refresh",
+        "title": "Refresh Sessions",
+        "icon": "$(refresh)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.createSession",
+        "title": "Create Sync Session",
+        "icon": "$(add)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.pauseSession",
+        "title": "Pause Session",
+        "icon": "$(debug-pause)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.resumeSession",
+        "title": "Resume Session",
+        "icon": "$(debug-start)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.terminateSession",
+        "title": "Terminate Session",
+        "icon": "$(trash)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.flushSession",
+        "title": "Flush Session",
+        "icon": "$(sync)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.resetSession",
+        "title": "Reset Session History",
+        "icon": "$(history)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.showSessionDetails",
+        "title": "Show Session Details",
+        "icon": "$(info)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.openLocalFolder",
+        "title": "Open Local Folder",
+        "icon": "$(folder-opened)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.connectSessionInCurrentWindow",
+        "title": "在当前窗口中连接",
+        "icon": "$(folder-opened)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.connectSessionInNewWindow",
+        "title": "在新窗口中连接",
+        "icon": "$(add)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.showLogs",
+        "title": "Show Logs",
+        "icon": "$(output)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.startDaemon",
+        "title": "Start Mutagen Daemon",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.stopDaemon",
+        "title": "Stop Mutagen Daemon",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.editSessionConfig",
+        "title": "Edit Configuration",
+        "icon": "$(gear)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.connectSavedSession",
+        "title": "Connect Saved Session",
+        "icon": "$(plug)",
+        "category": "Mutagen"
+      },
+      {
+        "command": "mutagen.manageSavedSessions",
+        "title": "Manage Saved Sessions",
+        "icon": "$(list-tree)",
+        "category": "Mutagen"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mutagen.createSession",
+          "when": "view == mutagen.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mutagen.refresh",
+          "when": "view == mutagen.sessions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mutagen.connectSavedSession",
+          "when": "view == mutagen.sessions",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mutagen.pauseSession",
+          "when": "view == mutagen.sessions && viewItem == session-active-local",
+          "group": "inline@1"
+        },
+        {
+          "command": "mutagen.resumeSession",
+          "when": "view == mutagen.sessions && viewItem == session-paused-local",
+          "group": "inline@1"
+        },
+        {
+          "command": "mutagen.connectSessionInCurrentWindow",
+          "when": "view == mutagen.sessions && viewItem == session-foreign",
+          "group": "inline@1"
+        },
+        {
+          "command": "mutagen.connectSessionInNewWindow",
+          "when": "view == mutagen.sessions && viewItem == session-foreign",
+          "group": "inline@2"
+        },
+        {
+          "command": "mutagen.flushSession",
+          "when": "view == mutagen.sessions && viewItem =~ /^session/",
+          "group": "inline@2"
+        },
+        {
+          "command": "mutagen.terminateSession",
+          "when": "view == mutagen.sessions && viewItem =~ /^session/",
+          "group": "inline@3"
+        },
+        {
+          "command": "mutagen.openLocalFolder",
+          "when": "view == mutagen.sessions && viewItem =~ /^session/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mutagen.showSessionDetails",
+          "when": "view == mutagen.sessions && viewItem =~ /^session/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mutagen.resetSession",
+          "when": "view == mutagen.sessions && viewItem =~ /^session/",
+          "group": "2_actions@1"
+        },
+        {
+          "command": "mutagen.editSessionConfig",
+          "when": "view == mutagen.sessions && viewItem =~ /^session/",
+          "group": "2_actions@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mutagen.pauseSession",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.resumeSession",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.terminateSession",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.flushSession",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.resetSession",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.showSessionDetails",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.openLocalFolder",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.connectSessionInCurrentWindow",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.connectSessionInNewWindow",
+          "when": "false"
+        },
+        {
+          "command": "mutagen.editSessionConfig",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Mutagen",
+      "properties": {
+        "mutagen.executablePath": {
+          "type": "string",
+          "default": "mutagen",
+          "description": "Path to the Mutagen executable"
+        },
+        "mutagen.refreshInterval": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "Status refresh interval in milliseconds"
+        },
+        "mutagen.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Mutagen status in the status bar"
+        },
+        "mutagen.autoStartDaemon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start Mutagen daemon if not running"
+        },
+        "mutagen.logLevel": {
+          "type": "string",
+          "enum": ["debug", "info", "warn", "error"],
+          "default": "info",
+          "description": "Log level for the extension"
+        },
+        "mutagen.globalIgnorePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Global ignore patterns for sync sessions (merged with workspace settings)"
+        },
+        "mutagen.autoSaveConnectionProfiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically save connection profiles when creating or editing sessions"
+        },
+        "mutagen.autoRestoreConnections": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically restore saved connections for opened workspace folders"
+        },
+        "mutagen.terminateRestoredSessionsOnClose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Terminate auto-restored sessions when window closes or workspace folder is removed"
+        },
+        "mutagen.maxConnectionRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum number of connection retry attempts when auto-restoring sessions (to avoid being locked by server)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.2",
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AIR-hl/vscode-mutagen-plugin"
+  },
+  "license": "MIT"
+}
