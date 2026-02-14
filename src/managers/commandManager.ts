@@ -975,25 +975,25 @@ export class CommandManager {
             {
                 label: '$(symbol-string) Session Name',
                 description: draft.name.trim() || '(unnamed)',
-                detail: 'Optional display name',
+                // detail: 'Optional display name',
                 value: 'editName'
             },
             {
                 label: '$(folder) Local Folder',
                 description: draft.localPath,
-                detail: 'Local endpoint path',
+                // detail: 'Local endpoint path',
                 value: 'editLocalPath'
             },
             {
                 label: '$(cloud) Remote Path',
                 description: draft.remotePath,
-                detail: 'Remote endpoint path',
+                // detail: 'Remote endpoint path',
                 value: 'editRemotePath'
             },
             {
                 label: '$(settings-gear) Sync Mode',
                 description: this.getSyncModeLabel(draft.mode),
-                detail: draft.mode,
+                // detail: draft.mode,
                 value: 'editMode'
             },
             {
@@ -1007,8 +1007,8 @@ export class CommandManager {
                 value: 'editIgnorePaths'
             },
             {
-                label: '$(check) Recreate Session',
-                detail: 'Apply the configuration above and recreate this session',
+                label: '$(check) Apply Changes',
+                // detail: 'Apply the configuration above and recreate this session',
                 value: 'apply'
             },
             {

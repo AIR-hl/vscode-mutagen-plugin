@@ -4,7 +4,7 @@
   "description": "Remote-style management for Mutagen file synchronization sessions",
   "version": "0.1.0",
   "publisher": "AIR-hl",
-  "icon": "assets/vscode-mutagen-plugin-icon.png",
+  "icon": "resources/icons/vscode-mutagen-plugin-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },

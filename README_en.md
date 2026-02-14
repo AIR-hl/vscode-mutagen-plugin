@@ -1,7 +1,7 @@
-<h1 align="center">Remote-Mutagen Plugin for VS Code</h1>
+<h1 align="center">Remote-Mutagen: Plugin for VSCode</h1>
 
 <p align="center">
-  <img src="assets/vscode-mutagen-plugin-logo.png" width="600" alt="Mutagen Logo">
+  <img src="resources/vscode-mutagen-plugin-logo.png" width="600" alt="Mutagen Logo">
 </p>
 <p align="center">
   <a href="./README.md">简体中文</a> • <a href="./README_en.md">English</a>
