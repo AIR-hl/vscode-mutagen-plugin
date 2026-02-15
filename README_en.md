@@ -1,4 +1,4 @@
-<h1 align="center">Remote-Mutagen: Plugin for VSCode</h1>
+<h1 align="center">Remote-Mutagen: Plugin for VS Code</h1>
 
 <p align="center">
   <img src="resources/vscode-mutagen-plugin-logo.png" width="600" alt="Mutagen Logo">
@@ -55,9 +55,6 @@ A VS Code extension for managing [Mutagen](https://mutagen.io/) file synchroniza
 - **Edit Configuration**: Right-click `Edit Configuration` (session will be recreated with a new ID)
 - **View Details**: Click the info icon to see full session details
 - **Connect Saved Session**: Click the plug button in the view title
-
-### Keyboard Shortcuts
-- `Cmd+Shift+P` (Mac) / `Ctrl+Shift+P` (Windows/Linux) → Search for "Mutagen" commands
 
 ## Configuration
 

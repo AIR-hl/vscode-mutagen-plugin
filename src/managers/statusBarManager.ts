@@ -8,6 +8,7 @@ interface TransferStats {
 }
 
 export class StatusBarManager {
+    private static readonly FIXED_STATUS_ICON = 'device-desktop';
     private statusBarItem: vscode.StatusBarItem;
     private transferItem: vscode.StatusBarItem;
     private service: MutagenService;
@@ -73,7 +74,7 @@ export class StatusBarManager {
         }
 
         if (sessions.length === 0) {
-            this.statusBarItem.text = '$(sync) Mutagen: No sessions';
+            this.setStatusText('No sessions');
             this.statusBarItem.tooltip = 'No sync sessions active';
             this.transferItem.hide();
             return;
@@ -91,24 +92,19 @@ export class StatusBarManager {
             s.status.startsWith('halted')
         );
 
-        let icon = 'sync';
         let statusText = '';
 
         if (errorSessions.length > 0) {
-            icon = 'error';
             statusText = `${errorSessions.length} error${errorSessions.length > 1 ? 's' : ''}`;
         } else if (syncingSessions.length > 0) {
-            icon = 'sync~spin';
             statusText = `Syncing ${syncingSessions.length}`;
         } else if (activeSessions.length > 0) {
-            icon = 'vm-running';
             statusText = `${activeSessions.length} watching`;
         } else {
-            icon = 'debug-pause';
             statusText = `${pausedSessions.length} paused`;
         }
 
-        this.statusBarItem.text = `$(${icon}) Mutagen: ${statusText}`;
+        this.setStatusText(statusText);
 
         const tooltip = new vscode.MarkdownString();
         tooltip.appendMarkdown('**Mutagen Sync Status**\n\n');
@@ -169,18 +165,22 @@ export class StatusBarManager {
 
     showSyncing(sessionName: string): void {
         if (!this.enabled) return;
-        this.statusBarItem.text = `$(sync~spin) Mutagen: Syncing ${sessionName}...`;
+        this.setStatusText(`Syncing ${sessionName}...`);
     }
 
     showError(message: string): void {
         if (!this.enabled) return;
-        this.statusBarItem.text = `$(error) Mutagen: ${message}`;
+        this.setStatusText(message);
         this.statusBarItem.tooltip = message;
     }
 
-    showMessage(message: string, icon = 'info'): void {
+    showMessage(message: string, _icon = 'info'): void {
         if (!this.enabled) return;
-        this.statusBarItem.text = `$(${icon}) Mutagen: ${message}`;
+        this.setStatusText(message);
+    }
+
+    private setStatusText(message: string): void {
+        this.statusBarItem.text = `$(${StatusBarManager.FIXED_STATUS_ICON}) Mutagen: ${message}`;
     }
 
     dispose(): void {

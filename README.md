@@ -1,4 +1,4 @@
-<h1 align="center">Remote-Mutagen: Plugin for VSCode</h1>
+<h1 align="center">Remote-Mutagen: Plugin for VS Code</h1>
 
 <p align="center">
   <img src="resources/vscode-mutagen-plugin-logo.png" width="600" alt="Mutagen Logo">
