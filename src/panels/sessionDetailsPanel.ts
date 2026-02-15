@@ -226,19 +226,20 @@ export class SessionDetailsPanel {
             <div class="endpoint">
                 <div class="endpoint-icon">📁</div>
                 <div class="endpoint-info">
-                    <div class="endpoint-label">Local</div>
-                    <div class="endpoint-path">${this.escapeHtml(local.path)}</div>
+                    <div class="endpoint-label">Alpha${isAlphaLocal ? ' (Local)' : ''}</div>
+                    <div class="endpoint-path">${this.escapeHtml(session.alpha.path)}${session.alpha.host ? ` @ ${this.escapeHtml(session.alpha.host)}` : ''}</div>
                 </div>
-                <span class="endpoint-status">${local.connected ? '✓ Connected' : '✗ Disconnected'}</span>
+                <span class="endpoint-status">${session.alpha.connected ? '✓ Connected' : '✗ Disconnected'}</span>
             </div>
             <div class="endpoint">
                 <div class="endpoint-icon">🌐</div>
                 <div class="endpoint-info">
-                    <div class="endpoint-label">Remote ${remote.host ? `(${this.escapeHtml(remote.host)})` : ''}</div>
-                    <div class="endpoint-path">${this.escapeHtml(remote.path)}</div>
+                    <div class="endpoint-label">Beta${!isAlphaLocal ? ' (Local)' : ''} ${remote.host ? `(${this.escapeHtml(remote.host)})` : ''}</div>
+                    <div class="endpoint-path">${this.escapeHtml(session.beta.path)}</div>
                 </div>
-                <span class="endpoint-status">${remote.connected ? '✓ Connected' : '✗ Disconnected'}</span>
+                <span class="endpoint-status">${session.beta.connected ? '✓ Connected' : '✗ Disconnected'}</span>
             </div>
+            <p style="margin: 12px 0 0; font-size: 12px; color: var(--vscode-descriptionForeground);">Alpha/Beta are Mutagen endpoint names. In two-way-resolved mode, Alpha wins conflicts.</p>
         </div>
     </div>
 

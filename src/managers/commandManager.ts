@@ -1,6 +1,8 @@
+import * as fs from 'fs/promises';
+import * as cp from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { MutagenEndpoint, MutagenSession, CreateSessionOptions } from '../models/session';
+import { Conflict, MutagenEndpoint, MutagenSession, CreateSessionOptions } from '../models/session';
 import { MutagenService } from '../services/mutagenService';
 import { SessionsTreeDataProvider, SessionTreeItem } from '../providers/sessionsTreeDataProvider';
 import { StatusBarManager } from '../managers/statusBarManager';
@@ -47,12 +49,26 @@ interface SessionConfigActionQuickPickItem extends vscode.QuickPickItem {
     value: 'editName' | 'editLocalPath' | 'editRemotePath' | 'editMode' | 'editIgnoreVcs' | 'editIgnorePaths' | 'apply' | 'cancel';
 }
 
+type ConflictDirection = 'local' | 'remote';
+
+interface HandledConflictRecord {
+    direction: ConflictDirection;
+    signature: string;
+    at: number;
+}
+
+interface ConflictEndpoints {
+    localEndpoint: MutagenEndpoint;
+    remoteEndpoint: MutagenEndpoint;
+}
+
 export class CommandManager {
     private service: MutagenService;
     private treeProvider: SessionsTreeDataProvider;
     private statusBar: StatusBarManager;
     private extensionUri: vscode.Uri;
     private profileService: ConnectionProfileService;
+    private handledConflictsBySession = new Map<string, Map<string, HandledConflictRecord>>();
 
     constructor(
         treeProvider: SessionsTreeDataProvider,
@@ -85,13 +101,22 @@ export class CommandManager {
             vscode.commands.registerCommand('mutagen.stopDaemon', () => this.stopDaemon()),
             vscode.commands.registerCommand('mutagen.editSessionConfig', (item: SessionTreeItem) => this.editSessionConfig(item)),
             vscode.commands.registerCommand('mutagen.connectSavedSession', () => this.connectSavedSession()),
-            vscode.commands.registerCommand('mutagen.manageSavedSessions', () => this.manageSavedSessions())
+            vscode.commands.registerCommand('mutagen.manageSavedSessions', () => this.manageSavedSessions()),
+            vscode.commands.registerCommand('mutagen.openConflictLocal', (item: SessionTreeItem) => this.openConflictLocal(item)),
+            vscode.commands.registerCommand('mutagen.copyConflictRemotePath', (item: SessionTreeItem) => this.copyConflictRemotePath(item)),
+            vscode.commands.registerCommand('mutagen.copyConflictAcceptLocalCommand', (item: SessionTreeItem) => this.copyConflictAcceptCommand(item, 'local')),
+            vscode.commands.registerCommand('mutagen.copyConflictAcceptRemoteCommand', (item: SessionTreeItem) => this.copyConflictAcceptCommand(item, 'remote')),
+            vscode.commands.registerCommand('mutagen.acceptConflictLocal', (item: SessionTreeItem) => this.acceptConflict(item, 'local')),
+            vscode.commands.registerCommand('mutagen.acceptConflictRemote', (item: SessionTreeItem) => this.acceptConflict(item, 'remote')),
+            vscode.commands.registerCommand('mutagen.acceptAllConflictsLocal', (item: SessionTreeItem) => this.acceptAllConflicts(item, 'local')),
+            vscode.commands.registerCommand('mutagen.acceptAllConflictsRemote', (item: SessionTreeItem) => this.acceptAllConflicts(item, 'remote'))
         );
     }
 
     async refresh(): Promise<void> {
         await this.treeProvider.loadSessions();
         this.statusBar.updateStatus(this.treeProvider.getSessions());
+        this.pruneHandledConflictRecords();
     }
 
     async createSession(): Promise<void> {
@@ -145,7 +170,7 @@ export class CommandManager {
 
         const ignoreVcsMode = await this.pickIgnoreVcsMode(
             'Select VCS ignore behavior',
-            undefined
+            false
         );
         if (!ignoreVcsMode) {
             return;
@@ -246,6 +271,7 @@ export class CommandManager {
 
         try {
             await this.service.terminateSession(item.session.identifier);
+            this.clearHandledConflicts(item.session.identifier);
             vscode.window.showInformationMessage(`Session "${item.session.name}" terminated`);
             await this.refresh();
         } catch (err) {
@@ -287,6 +313,7 @@ export class CommandManager {
 
         try {
             await this.service.resetSession(item.session.identifier);
+            this.clearHandledConflicts(item.session.identifier);
             vscode.window.showInformationMessage(`Session "${item.session.name}" history reset`);
             await this.refresh();
         } catch (err) {
@@ -309,6 +336,200 @@ export class CommandManager {
         }
 
         await this.openSessionProject(item.session, false);
+    }
+
+    async openConflictLocal(item: SessionTreeItem): Promise<void> {
+        const conflictData = this.getConflictDataFromItem(item);
+        if (!conflictData) {
+            return;
+        }
+
+        try {
+            const endpoints = this.getConflictEndpoints(conflictData.session);
+            if (!endpoints) {
+                vscode.window.showErrorMessage('Unable to locate local endpoint for this conflict');
+                return;
+            }
+
+            const localPath = this.resolveLocalConflictPath(endpoints.localEndpoint.path, conflictData.conflict.root);
+            const state = await this.getLocalPathState(localPath);
+            if (state === 'missing') {
+                vscode.window.showWarningMessage(`Local path does not exist: ${localPath}`);
+                return;
+            }
+
+            if (state === 'directory') {
+                await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(localPath));
+                return;
+            }
+
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(localPath));
+            await vscode.window.showTextDocument(doc, { preview: false });
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Failed to open local conflict path: ${message}`);
+        }
+    }
+
+    async copyConflictRemotePath(item: SessionTreeItem): Promise<void> {
+        const conflictData = this.getConflictDataFromItem(item);
+        if (!conflictData) {
+            return;
+        }
+
+        try {
+            const remotePath = this.getConflictRemotePathDisplay(conflictData.session, conflictData.conflict.root);
+            await vscode.env.clipboard.writeText(remotePath);
+            vscode.window.showInformationMessage(`Copied remote conflict path: ${remotePath}`);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Failed to copy remote path: ${message}`);
+        }
+    }
+
+    async copyConflictAcceptCommand(item: SessionTreeItem, direction: ConflictDirection): Promise<void> {
+        const conflictData = this.getConflictDataFromItem(item);
+        if (!conflictData) {
+            return;
+        }
+
+        try {
+            const command = this.buildConflictAcceptCommand(conflictData.session, conflictData.conflict, direction);
+            await vscode.env.clipboard.writeText(command);
+            vscode.window.showInformationMessage(
+                `Copied ${direction === 'local' ? 'accept-local' : 'accept-remote'} command`
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Failed to copy command: ${message}`);
+        }
+    }
+
+    async acceptConflict(item: SessionTreeItem, direction: ConflictDirection): Promise<void> {
+        const conflictData = this.getConflictDataFromItem(item);
+        if (!conflictData) {
+            return;
+        }
+
+        try {
+            const session = await this.service.getSession(conflictData.session.identifier);
+            if (!session) {
+                vscode.window.showErrorMessage('Session not found. Try refreshing and retrying.');
+                return;
+            }
+
+            const latestConflict = this.findConflictInSession(session, conflictData.conflict);
+            if (!latestConflict) {
+                await this.refresh();
+                vscode.window.showInformationMessage(`Conflict "${conflictData.conflict.root}" is already resolved`);
+                return;
+            }
+
+            await this.applyConflictDirection(session, latestConflict, direction);
+            this.markConflictHandled(session.identifier, latestConflict, direction);
+
+            await this.refresh();
+            vscode.window.showInformationMessage(
+                `Accepted ${direction === 'local' ? 'local' : 'remote'} version for "${latestConflict.root}"`
+            );
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Failed to accept conflict: ${message}`);
+        }
+    }
+
+    async acceptAllConflicts(item: SessionTreeItem, direction: ConflictDirection): Promise<void> {
+        if (!item.session) {
+            return;
+        }
+
+        try {
+            const session = await this.service.getSession(item.session.identifier);
+            if (!session) {
+                vscode.window.showErrorMessage('Session not found. Try refreshing and retrying.');
+                return;
+            }
+
+            const conflicts = session.conflicts ?? [];
+            if (conflicts.length === 0) {
+                this.clearHandledConflicts(session.identifier);
+                await this.refresh();
+                vscode.window.showInformationMessage('No conflicts to process');
+                return;
+            }
+
+            const exclusion = this.splitHandledConflicts(session.identifier, conflicts);
+            if (exclusion.pending.length === 0) {
+                vscode.window.showInformationMessage(
+                    `No pending conflicts. Total: ${conflicts.length}, skipped handled: ${exclusion.excludedCount}.`
+                );
+                return;
+            }
+
+            const confirm = await vscode.window.showWarningMessage(
+                `Accept ${direction === 'local' ? 'local' : 'remote'} version for ${exclusion.pending.length} conflict(s)? `
+                    + `Handled conflicts with unchanged versions will be skipped (${exclusion.excludedCount}).`,
+                { modal: true },
+                'Accept All'
+            );
+
+            if (confirm !== 'Accept All') {
+                return;
+            }
+
+            let successCount = 0;
+            const failed: string[] = [];
+
+            for (const conflict of exclusion.pending) {
+                try {
+                    await this.applyConflictDirection(session, conflict, direction);
+                    this.markConflictHandled(session.identifier, conflict, direction);
+                    successCount += 1;
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    failed.push(`${conflict.root}: ${message}`);
+                }
+            }
+
+            const attemptedCount = exclusion.pending.length;
+            const failedCount = failed.length;
+            const allSucceeded = attemptedCount > 0 && failedCount === 0;
+            let converged = false;
+            let convergenceError: string | null = null;
+
+            if (allSucceeded) {
+                try {
+                    await this.service.resetSession(session.identifier);
+                    await this.service.flushSession(session.identifier);
+                    this.clearHandledConflicts(session.identifier);
+                    converged = true;
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    convergenceError = message;
+                }
+            }
+
+            await this.refresh();
+
+            const summary = `Total: ${conflicts.length}, skipped handled: ${exclusion.excludedCount}, `
+                + `attempted: ${attemptedCount}, success: ${successCount}, failed: ${failedCount}`;
+
+            if (failedCount === 0) {
+                const convergenceNote = attemptedCount === 0
+                    ? 'No actionable conflicts.'
+                    : converged
+                        ? 'Auto reset+flush completed.'
+                        : `Conflict files processed, but auto reset+flush failed: ${convergenceError}`;
+                vscode.window.showInformationMessage(`${summary}. ${convergenceNote}`);
+                return;
+            }
+
+            const detail = failed.slice(0, 3).join(' | ');
+            vscode.window.showWarningMessage(`${summary}. Failed items: ${detail}`);
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            vscode.window.showErrorMessage(`Failed to accept all conflicts: ${message}`);
+        }
     }
 
     async connectSessionInCurrentWindow(item: SessionTreeItem): Promise<void> {
@@ -393,7 +614,7 @@ export class CommandManager {
         const options: CreateSessionOptions = {
             name: name.trim() || undefined,
             mode,
-            ignoreVcs
+            ignoreVcs: ignoreVcs ?? false
         };
 
         if (effectiveIgnorePaths.length > 0) {
@@ -414,7 +635,7 @@ export class CommandManager {
                 localPath,
                 remotePath,
                 mode,
-                ignoreVcs,
+                ignoreVcs: ignoreVcs ?? false,
                 ignorePaths: sessionIgnorePaths,
                 workspaceFolder: this.resolveWorkspaceFolderPath(localPath),
                 lastSessionIdentifier: newSessionIdentifier
@@ -667,7 +888,7 @@ export class CommandManager {
         const options: CreateSessionOptions = {
             name: profile.name || undefined,
             mode: profile.mode ?? 'two-way-safe',
-            ignoreVcs: profile.ignoreVcs
+            ignoreVcs: profile.ignoreVcs ?? false
         };
 
         if (effectiveIgnorePaths.length > 0) {
@@ -759,6 +980,590 @@ export class CommandManager {
         return Array.from(new Set(entries));
     }
 
+    private getConflictDataFromItem(item: SessionTreeItem): { session: MutagenSession; conflict: Conflict } | null {
+        if (!item.session || !item.conflict) {
+            vscode.window.showWarningMessage('Please select a specific conflict item');
+            return null;
+        }
+
+        return {
+            session: item.session,
+            conflict: item.conflict
+        };
+    }
+
+    private getConflictEndpoints(session: MutagenSession): ConflictEndpoints | null {
+        if (session.alpha.protocol === 'local') {
+            return {
+                localEndpoint: session.alpha,
+                remoteEndpoint: session.beta
+            };
+        }
+
+        if (session.beta.protocol === 'local') {
+            return {
+                localEndpoint: session.beta,
+                remoteEndpoint: session.alpha
+            };
+        }
+
+        return null;
+    }
+
+    private async applyConflictDirection(
+        session: MutagenSession,
+        conflict: Conflict,
+        direction: ConflictDirection
+    ): Promise<void> {
+        const endpoints = this.getConflictEndpoints(session);
+        if (!endpoints) {
+            throw new Error('Unable to find a local endpoint for this session');
+        }
+
+        const localPath = this.resolveLocalConflictPath(endpoints.localEndpoint.path, conflict.root);
+        const remotePath = this.resolveEndpointConflictPath(endpoints.remoteEndpoint, conflict.root);
+
+        if (direction === 'local') {
+            await this.applyLocalToEndpoint(localPath, endpoints.remoteEndpoint, remotePath);
+            return;
+        }
+
+        await this.applyEndpointToLocal(endpoints.remoteEndpoint, remotePath, localPath);
+    }
+
+    private async applyLocalToEndpoint(
+        localSourcePath: string,
+        remoteEndpoint: MutagenEndpoint,
+        remoteDestinationPath: string
+    ): Promise<void> {
+        if (remoteEndpoint.protocol === 'local') {
+            await this.copyOrDeleteLocalPath(localSourcePath, remoteDestinationPath);
+            return;
+        }
+
+        if (remoteEndpoint.protocol === 'ssh') {
+            await this.applyLocalToSsh(localSourcePath, remoteEndpoint, remoteDestinationPath);
+            return;
+        }
+
+        throw new Error('Docker endpoints are not supported for auto-apply. Use copy command fallback.');
+    }
+
+    private async applyEndpointToLocal(
+        remoteEndpoint: MutagenEndpoint,
+        remoteSourcePath: string,
+        localDestinationPath: string
+    ): Promise<void> {
+        if (remoteEndpoint.protocol === 'local') {
+            await this.copyOrDeleteLocalPath(remoteSourcePath, localDestinationPath);
+            return;
+        }
+
+        if (remoteEndpoint.protocol === 'ssh') {
+            await this.applySshToLocal(remoteEndpoint, remoteSourcePath, localDestinationPath);
+            return;
+        }
+
+        throw new Error('Docker endpoints are not supported for auto-apply. Use copy command fallback.');
+    }
+
+    private async copyOrDeleteLocalPath(sourcePath: string, destinationPath: string): Promise<void> {
+        if (path.resolve(sourcePath) === path.resolve(destinationPath)) {
+            return;
+        }
+
+        const sourceState = await this.getLocalPathState(sourcePath);
+        if (sourceState === 'missing') {
+            await fs.rm(destinationPath, { recursive: true, force: true });
+            return;
+        }
+
+        await fs.rm(destinationPath, { recursive: true, force: true });
+        await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+
+        if (sourceState === 'directory') {
+            await fs.cp(sourcePath, destinationPath, { recursive: true, force: true });
+            return;
+        }
+
+        await fs.copyFile(sourcePath, destinationPath);
+    }
+
+    private async applyLocalToSsh(
+        localSourcePath: string,
+        remoteEndpoint: MutagenEndpoint,
+        remoteDestinationPath: string
+    ): Promise<void> {
+        const sourceState = await this.getLocalPathState(localSourcePath);
+        const sshTarget = this.getSshTarget(remoteEndpoint);
+
+        if (sourceState === 'missing') {
+            await this.runExternalCommand('ssh', [
+                sshTarget,
+                `rm -rf ${this.quoteShell(remoteDestinationPath)}`
+            ]);
+            return;
+        }
+
+        await this.runExternalCommand('ssh', [
+            sshTarget,
+            `mkdir -p ${this.quoteShell(path.posix.dirname(remoteDestinationPath))} && rm -rf ${this.quoteShell(remoteDestinationPath)}`
+        ]);
+
+        const scpArgs: string[] = [];
+        if (sourceState === 'directory') {
+            scpArgs.push('-r');
+        }
+        scpArgs.push(localSourcePath, this.buildScpRemoteSpec(remoteEndpoint, remoteDestinationPath));
+        await this.runExternalCommand('scp', scpArgs);
+    }
+
+    private async applySshToLocal(
+        remoteEndpoint: MutagenEndpoint,
+        remoteSourcePath: string,
+        localDestinationPath: string
+    ): Promise<void> {
+        const sourceState = await this.getRemotePathState(remoteEndpoint, remoteSourcePath);
+
+        if (sourceState === 'missing') {
+            await fs.rm(localDestinationPath, { recursive: true, force: true });
+            return;
+        }
+
+        await fs.rm(localDestinationPath, { recursive: true, force: true });
+        await fs.mkdir(path.dirname(localDestinationPath), { recursive: true });
+
+        const scpArgs: string[] = [];
+        if (sourceState === 'directory') {
+            scpArgs.push('-r');
+        }
+        scpArgs.push(this.buildScpRemoteSpec(remoteEndpoint, remoteSourcePath), localDestinationPath);
+        await this.runExternalCommand('scp', scpArgs);
+    }
+
+    private async getRemotePathState(
+        remoteEndpoint: MutagenEndpoint,
+        remotePath: string
+    ): Promise<'file' | 'directory' | 'missing'> {
+        const sshTarget = this.getSshTarget(remoteEndpoint);
+        const checkCommand = [
+            `if [ -d ${this.quoteShell(remotePath)} ]; then`,
+            'echo directory',
+            `elif [ -e ${this.quoteShell(remotePath)} ]; then`,
+            'echo file',
+            'else',
+            'echo missing',
+            'fi'
+        ].join(' ');
+
+        const result = await this.runExternalCommand('ssh', [sshTarget, checkCommand]);
+        const state = result.stdout.trim().split(/\r?\n/).pop() ?? '';
+        if (state === 'directory' || state === 'file' || state === 'missing') {
+            return state;
+        }
+
+        throw new Error(`Unexpected remote path state: ${state || '(empty output)'}`);
+    }
+
+    private async getLocalPathState(targetPath: string): Promise<'file' | 'directory' | 'missing'> {
+        try {
+            const stat = await fs.stat(targetPath);
+            return stat.isDirectory() ? 'directory' : 'file';
+        } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code === 'ENOENT') {
+                return 'missing';
+            }
+            throw err;
+        }
+    }
+
+    private findConflictInSession(session: MutagenSession, referenceConflict: Conflict): Conflict | null {
+        const conflicts = session.conflicts ?? [];
+        const referenceSignature = this.buildConflictSignature(referenceConflict);
+        const exact = conflicts.find(conflict =>
+            conflict.root === referenceConflict.root
+            && this.buildConflictSignature(conflict) === referenceSignature
+        );
+
+        if (exact) {
+            return exact;
+        }
+
+        return conflicts.find(conflict => conflict.root === referenceConflict.root) ?? null;
+    }
+
+    private buildConflictAcceptCommand(
+        session: MutagenSession,
+        conflict: Conflict,
+        direction: ConflictDirection
+    ): string {
+        const endpoints = this.getConflictEndpoints(session);
+        if (!endpoints) {
+            throw new Error('Unable to locate local endpoint for this session');
+        }
+
+        const localPath = this.resolveLocalConflictPath(endpoints.localEndpoint.path, conflict.root);
+        const remotePath = this.resolveEndpointConflictPath(endpoints.remoteEndpoint, conflict.root);
+
+        if (direction === 'local') {
+            return this.buildDirectionCommand(
+                endpoints.remoteEndpoint,
+                localPath,
+                remotePath,
+                'local-to-remote'
+            );
+        }
+
+        return this.buildDirectionCommand(
+            endpoints.remoteEndpoint,
+            localPath,
+            remotePath,
+            'remote-to-local'
+        );
+    }
+
+    private buildDirectionCommand(
+        remoteEndpoint: MutagenEndpoint,
+        localPath: string,
+        remotePath: string,
+        mode: 'local-to-remote' | 'remote-to-local'
+    ): string {
+        if (remoteEndpoint.protocol === 'local') {
+            return mode === 'local-to-remote'
+                ? this.buildLocalCopyCommand(localPath, remotePath)
+                : this.buildLocalCopyCommand(remotePath, localPath);
+        }
+
+        if (remoteEndpoint.protocol === 'ssh') {
+            return mode === 'local-to-remote'
+                ? this.buildLocalToSshCommand(localPath, remoteEndpoint, remotePath)
+                : this.buildSshToLocalCommand(remoteEndpoint, remotePath, localPath);
+        }
+
+        return mode === 'local-to-remote'
+            ? this.buildDockerFallbackCommand(localPath, remoteEndpoint, remotePath, 'local-to-remote')
+            : this.buildDockerFallbackCommand(localPath, remoteEndpoint, remotePath, 'remote-to-local');
+    }
+
+    private buildLocalCopyCommand(sourcePath: string, destinationPath: string): string {
+        return [
+            `if [ -e ${this.quoteShell(sourcePath)} ]; then`,
+            `  rm -rf ${this.quoteShell(destinationPath)}`,
+            `  mkdir -p ${this.quoteShell(path.dirname(destinationPath))}`,
+            `  cp -R ${this.quoteShell(sourcePath)} ${this.quoteShell(destinationPath)}`,
+            'else',
+            `  rm -rf ${this.quoteShell(destinationPath)}`,
+            'fi'
+        ].join('\n');
+    }
+
+    private buildLocalToSshCommand(
+        localPath: string,
+        remoteEndpoint: MutagenEndpoint,
+        remotePath: string
+    ): string {
+        const sshTarget = this.getSshTarget(remoteEndpoint);
+        return [
+            `LOCAL=${this.quoteShell(localPath)}`,
+            `REMOTE=${this.quoteShell(remotePath)}`,
+            `HOST=${this.quoteShell(sshTarget)}`,
+            'if [ -e "$LOCAL" ]; then',
+            '  ssh "$HOST" "mkdir -p ' + this.quoteShell(path.posix.dirname(remotePath)) + ' && rm -rf ' + this.quoteShell(remotePath) + '"',
+            '  if [ -d "$LOCAL" ]; then',
+            `    scp -r "$LOCAL" "$HOST:${this.quoteShell(remotePath)}"`,
+            '  else',
+            `    scp "$LOCAL" "$HOST:${this.quoteShell(remotePath)}"`,
+            '  fi',
+            'else',
+            '  ssh "$HOST" "rm -rf ' + this.quoteShell(remotePath) + '"',
+            'fi'
+        ].join('\n');
+    }
+
+    private buildSshToLocalCommand(
+        remoteEndpoint: MutagenEndpoint,
+        remotePath: string,
+        localPath: string
+    ): string {
+        const sshTarget = this.getSshTarget(remoteEndpoint);
+        return [
+            `LOCAL=${this.quoteShell(localPath)}`,
+            `REMOTE=${this.quoteShell(remotePath)}`,
+            `HOST=${this.quoteShell(sshTarget)}`,
+            `STATE=$(ssh "$HOST" "if [ -d ${this.quoteShell(remotePath)} ]; then echo directory; elif [ -e ${this.quoteShell(remotePath)} ]; then echo file; else echo missing; fi")`,
+            'if [ "$STATE" = "missing" ]; then',
+            '  rm -rf "$LOCAL"',
+            'else',
+            '  rm -rf "$LOCAL"',
+            '  mkdir -p "$(dirname "$LOCAL")"',
+            '  if [ "$STATE" = "directory" ]; then',
+            `    scp -r "$HOST:${this.quoteShell(remotePath)}" "$LOCAL"`,
+            '  else',
+            `    scp "$HOST:${this.quoteShell(remotePath)}" "$LOCAL"`,
+            '  fi',
+            'fi'
+        ].join('\n');
+    }
+
+    private buildDockerFallbackCommand(
+        localPath: string,
+        remoteEndpoint: MutagenEndpoint,
+        remotePath: string,
+        mode: 'local-to-remote' | 'remote-to-local'
+    ): string {
+        const container = remoteEndpoint.host || '<container>';
+        if (mode === 'local-to-remote') {
+            return [
+                '# Docker endpoints are not auto-applied by this extension.',
+                '# Run manually:',
+                `docker cp ${this.quoteShell(localPath)} ${this.quoteShell(`${container}:${remotePath}`)}`,
+                `docker exec ${this.quoteShell(container)} rm -rf ${this.quoteShell(remotePath)} # optional when source is missing`
+            ].join('\n');
+        }
+
+        return [
+            '# Docker endpoints are not auto-applied by this extension.',
+            '# Run manually:',
+            `docker cp ${this.quoteShell(`${container}:${remotePath}`)} ${this.quoteShell(localPath)}`
+        ].join('\n');
+    }
+
+    private getConflictRemotePathDisplay(session: MutagenSession, conflictRoot: string): string {
+        const endpoints = this.getConflictEndpoints(session);
+        if (!endpoints) {
+            throw new Error('Unable to locate local endpoint for this session');
+        }
+
+        const remotePath = this.resolveEndpointConflictPath(endpoints.remoteEndpoint, conflictRoot);
+        if (endpoints.remoteEndpoint.protocol === 'ssh') {
+            return `${this.getSshTarget(endpoints.remoteEndpoint)}:${remotePath}`;
+        }
+
+        if (endpoints.remoteEndpoint.protocol === 'docker') {
+            const container = endpoints.remoteEndpoint.host || '<container>';
+            return `docker://${container}${remotePath}`;
+        }
+
+        return remotePath;
+    }
+
+    private splitHandledConflicts(
+        sessionIdentifier: string,
+        conflicts: Conflict[]
+    ): { pending: Conflict[]; excludedCount: number } {
+        const handled = this.handledConflictsBySession.get(sessionIdentifier);
+        if (!handled || handled.size === 0) {
+            return {
+                pending: conflicts,
+                excludedCount: 0
+            };
+        }
+
+        const pending: Conflict[] = [];
+        let excludedCount = 0;
+        for (const conflict of conflicts) {
+            const record = handled.get(conflict.root);
+            const signature = this.buildConflictSignature(conflict);
+            if (record && record.signature === signature) {
+                excludedCount += 1;
+                continue;
+            }
+
+            pending.push(conflict);
+        }
+
+        return {
+            pending,
+            excludedCount
+        };
+    }
+
+    private markConflictHandled(
+        sessionIdentifier: string,
+        conflict: Conflict,
+        direction: ConflictDirection
+    ): void {
+        const signature = this.buildConflictSignature(conflict);
+        const records = this.handledConflictsBySession.get(sessionIdentifier) ?? new Map<string, HandledConflictRecord>();
+        records.set(conflict.root, {
+            direction,
+            signature,
+            at: Date.now()
+        });
+        this.handledConflictsBySession.set(sessionIdentifier, records);
+    }
+
+    private pruneHandledConflictRecords(): void {
+        if (this.handledConflictsBySession.size === 0) {
+            return;
+        }
+
+        const sessions = this.treeProvider.getSessions();
+        const sessionById = new Map(sessions.map(session => [session.identifier, session]));
+
+        for (const [sessionIdentifier, records] of this.handledConflictsBySession) {
+            const session = sessionById.get(sessionIdentifier);
+            const currentConflicts = session?.conflicts ?? [];
+            if (!session || currentConflicts.length === 0) {
+                this.handledConflictsBySession.delete(sessionIdentifier);
+                continue;
+            }
+
+            const signatureByRoot = new Map(
+                currentConflicts.map(conflict => [conflict.root, this.buildConflictSignature(conflict)])
+            );
+
+            for (const [root, record] of records) {
+                const currentSignature = signatureByRoot.get(root);
+                if (!currentSignature || currentSignature !== record.signature) {
+                    records.delete(root);
+                }
+            }
+
+            if (records.size === 0) {
+                this.handledConflictsBySession.delete(sessionIdentifier);
+            }
+        }
+    }
+
+    private clearHandledConflicts(sessionIdentifier: string): void {
+        this.handledConflictsBySession.delete(sessionIdentifier);
+    }
+
+    private buildConflictSignature(conflict: Conflict): string {
+        const serializeEntry = (entry: unknown): string => {
+            if (!entry) {
+                return 'null';
+            }
+
+            if (typeof entry !== 'object') {
+                return String(entry);
+            }
+
+            const map = entry as Record<string, unknown>;
+            return JSON.stringify(
+                Object.keys(map)
+                    .sort()
+                    .reduce<Record<string, unknown>>((acc, key) => {
+                        acc[key] = map[key];
+                        return acc;
+                    }, {})
+            );
+        };
+
+        const serializeChanges = (changes: Conflict['alphaChanges']): string[] =>
+            (changes ?? [])
+                .map(change => `${change.path}|${serializeEntry(change.old)}|${serializeEntry(change.new)}`)
+                .sort();
+
+        const payload = {
+            root: conflict.root,
+            alphaChanges: serializeChanges(conflict.alphaChanges),
+            betaChanges: serializeChanges(conflict.betaChanges)
+        };
+
+        return JSON.stringify(payload);
+    }
+
+    private resolveLocalConflictPath(localRoot: string, conflictRoot: string): string {
+        const basePath = path.resolve(localRoot);
+        const targetPath = path.resolve(basePath, ...this.splitConflictRoot(conflictRoot));
+        if (!this.isSubPath(basePath, targetPath)) {
+            throw new Error(`Conflict path escapes local root: ${conflictRoot}`);
+        }
+        return targetPath;
+    }
+
+    private resolveEndpointConflictPath(endpoint: MutagenEndpoint, conflictRoot: string): string {
+        if (endpoint.protocol === 'local') {
+            return this.resolveLocalConflictPath(endpoint.path, conflictRoot);
+        }
+
+        return this.resolveRemoteConflictPath(endpoint.path, conflictRoot);
+    }
+
+    private resolveRemoteConflictPath(remoteRoot: string, conflictRoot: string): string {
+        const basePath = path.posix.resolve(remoteRoot);
+        const targetPath = path.posix.resolve(basePath, ...this.splitConflictRoot(conflictRoot));
+        if (!this.isSubPathPosix(basePath, targetPath)) {
+            throw new Error(`Conflict path escapes remote root: ${conflictRoot}`);
+        }
+        return targetPath;
+    }
+
+    private splitConflictRoot(conflictRoot: string): string[] {
+        return conflictRoot
+            .replace(/\\/g, '/')
+            .split('/')
+            .filter(segment => segment.length > 0 && segment !== '.');
+    }
+
+    private isSubPath(basePath: string, targetPath: string): boolean {
+        const relative = path.relative(basePath, targetPath);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    }
+
+    private isSubPathPosix(basePath: string, targetPath: string): boolean {
+        const relative = path.posix.relative(basePath, targetPath);
+        return relative === '' || (!relative.startsWith('..') && !path.posix.isAbsolute(relative));
+    }
+
+    private getSshTarget(endpoint: MutagenEndpoint): string {
+        if (!endpoint.host) {
+            throw new Error('SSH endpoint host is missing');
+        }
+
+        return endpoint.user ? `${endpoint.user}@${endpoint.host}` : endpoint.host;
+    }
+
+    private buildScpRemoteSpec(endpoint: MutagenEndpoint, remotePath: string): string {
+        return `${this.getSshTarget(endpoint)}:${this.quoteShell(remotePath)}`;
+    }
+
+    private quoteShell(value: string): string {
+        return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+    }
+
+    private async runExternalCommand(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+        Logger.debug(`Executing external command: ${command} ${args.join(' ')}`);
+        return new Promise((resolve, reject) => {
+            const proc = cp.spawn(command, args, {
+                env: { ...globalThis.process.env }
+            });
+
+            let stdout = '';
+            let stderr = '';
+
+            proc.stdout.on('data', data => {
+                stdout += data.toString();
+            });
+
+            proc.stderr.on('data', data => {
+                stderr += data.toString();
+            });
+
+            proc.on('error', err => {
+                const code = (err as NodeJS.ErrnoException).code;
+                if (code === 'ENOENT') {
+                    reject(new Error(`Command not found: ${command}`));
+                    return;
+                }
+                reject(err);
+            });
+
+            proc.on('close', code => {
+                if (code === 0) {
+                    resolve({ stdout, stderr });
+                    return;
+                }
+
+                const message = stderr.trim() || stdout.trim() || `${command} failed with code ${code}`;
+                reject(new Error(message));
+            });
+        });
+    }
+
     private pickSyncMode(
         placeHolder: string,
         currentMode: NonNullable<CreateSessionOptions['mode']>
@@ -767,22 +1572,22 @@ export class CommandManager {
             {
                 label: 'Two-Way Safe',
                 value: 'two-way-safe',
-                description: 'Bidirectional sync, safe mode (default)'
+                description: 'Bidirectional sync, keeps conflicts for manual resolution (default)'
             },
             {
                 label: 'Two-Way Resolved',
                 value: 'two-way-resolved',
-                description: 'Bidirectional sync, auto-resolve conflicts'
+                description: 'Bidirectional sync, conflicts auto-resolved by Local (Alpha wins)'
             },
             {
                 label: 'One-Way Safe',
                 value: 'one-way-safe',
-                description: 'Local to remote only, safe mode'
+                description: 'Local → Remote only (Alpha → Beta), safe mode'
             },
             {
                 label: 'One-Way Replica',
                 value: 'one-way-replica',
-                description: 'Local to remote only, mirror mode'
+                description: 'Local → Remote only (Alpha → Beta), mirror mode'
             }
         ];
 
@@ -802,22 +1607,18 @@ export class CommandManager {
         const items: IgnoreVcsQuickPickItem[] = [
             {
                 label: 'Default',
-                value: undefined,
-                description: 'Use Mutagen default behavior'
+                value: false,
+                description: 'Propagate VCS directories (same as Sync VCS)'
             },
             {
                 label: 'Ignore VCS',
                 value: true,
                 description: 'Ignore .git, .svn, etc.'
-            },
-            {
-                label: 'Propagate VCS',
-                value: false,
-                description: 'Sync VCS directories'
             }
         ];
 
-        const current = items.find(item => item.value === currentValue);
+        const normalizedCurrentValue = currentValue ?? false;
+        const current = items.find(item => item.value === normalizedCurrentValue);
 
         return vscode.window.showQuickPick(items, {
             placeHolder,
@@ -975,30 +1776,30 @@ export class CommandManager {
             {
                 label: '$(symbol-string) Session Name',
                 description: draft.name.trim() || '(unnamed)',
-                // detail: 'Optional display name',
                 value: 'editName'
             },
             {
                 label: '$(folder) Local Folder',
                 description: draft.localPath,
-                // detail: 'Local endpoint path',
+                // detail: 'Alpha endpoint (used in conflict resolution)',
                 value: 'editLocalPath'
             },
             {
                 label: '$(cloud) Remote Path',
                 description: draft.remotePath,
-                // detail: 'Remote endpoint path',
+                // detail: 'Beta endpoint',
                 value: 'editRemotePath'
             },
             {
                 label: '$(settings-gear) Sync Mode',
                 description: this.getSyncModeLabel(draft.mode),
-                // detail: draft.mode,
+                // detail: 'Two-Way Resolved: Local wins conflicts | One-Way: Local → Remote only',
                 value: 'editMode'
             },
             {
                 label: '$(git-branch) VCS Ignore',
                 description: this.getIgnoreVcsLabel(draft.ignoreVcs),
+                // detail: 'Default syncs .git/.svn; Ignore excludes VCS directories',
                 value: 'editIgnoreVcs'
             },
             {
@@ -1038,11 +1839,8 @@ export class CommandManager {
             return 'Ignore VCS';
         }
 
-        if (ignoreVcs === false) {
-            return 'Propagate VCS';
-        }
-
-        return 'Default';
+        // Treat undefined as the extension default: Propagate VCS
+        return 'Default (Propagate VCS)';
     }
 
     private extractSessionDefaults(session: MutagenSession): SessionConfigDraft | null {
@@ -1063,7 +1861,7 @@ export class CommandManager {
             remotePath: this.formatRemoteEndpoint(remote),
             name: session.name,
             mode: 'two-way-safe',
-            ignoreVcs: session.ignore.vcs,
+            ignoreVcs: session.ignore.vcs ?? false,
             sessionIgnorePaths: session.ignore.paths ?? []
         };
     }

@@ -15,6 +15,8 @@ export interface MutagenEndpoint {
     totalFileSize: number;
     scanProblems?: ScanProblem[];
     transitionProblems?: TransitionProblem[];
+    // Mutagen >=0.18 reports staging progress under endpoint state.
+    stagingProgress?: StagingProgress;
 }
 
 export interface ScanProblem {
@@ -53,10 +55,23 @@ export interface CompressionConfig {
     algorithm?: 'none' | 'deflate' | 'zstandard';
 }
 
+export interface ConflictEntry {
+    kind: string;
+    digest?: string;
+    executable?: boolean;
+    target?: string;
+}
+
+export interface ConflictChange {
+    path: string;
+    old?: ConflictEntry | null;
+    new?: ConflictEntry | null;
+}
+
 export interface Conflict {
     root: string;
-    alphaChanges: string[];
-    betaChanges: string[];
+    alphaChanges?: ConflictChange[];
+    betaChanges?: ConflictChange[];
 }
 
 export type SessionStatus = 
@@ -94,16 +109,21 @@ export interface MutagenSession {
     lastError?: string;
     successfulCycles: number;
     conflicts?: Conflict[];
-    // Extended fields from monitor
+    // Legacy top-level staging progress (older Mutagen output shape).
     stagingProgress?: StagingProgress;
 }
 
 export interface StagingProgress {
     path: string;
     receivedSize: number;
-    totalSize: number;
-    receivedCount: number;
-    totalCount: number;
+    expectedSize: number;
+    receivedFiles: number;
+    expectedFiles: number;
+    totalReceivedSize: number;
+    // Backward compatibility with older field names.
+    totalSize?: number;
+    receivedCount?: number;
+    totalCount?: number;
 }
 
 export interface MonitorState {

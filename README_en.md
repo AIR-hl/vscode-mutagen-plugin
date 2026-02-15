@@ -19,8 +19,8 @@ A VS Code extension for managing [Mutagen](https://mutagen.io/) file synchroniza
 - **Session Details**: View detailed session information in a beautiful WebView panel
 
 ### Status Monitoring
-- **Real-time Status**: Status bar shows overall sync status (watching, syncing, errors)
-- **Transfer Speed**: Display upload/download speed during active transfers
+- **Real-time Status**: If the current window has local Mutagen sessions, the status bar prioritizes current-workspace status; otherwise it shows global status
+- **Transfer Speed**: In Mutagen-managed workspaces, the main status bar displays directional throughput (`↑/↓`); non-managed windows keep the original global status behavior
 - **Auto-refresh**: Configurable refresh interval for status updates
 
 ### Configuration and Persistence
@@ -35,6 +35,13 @@ A VS Code extension for managing [Mutagen](https://mutagen.io/) file synchroniza
 - **Error Alerts**: Visual indicators for sessions with errors or conflicts
 - **Progress Display**: Animated icons during active synchronization
 
+### Conflict Resolution Enhancements
+- **Conflict File List**: Expand `Conflicts: N` to inspect each conflicting path
+- **Open Local Target**: Click a conflict entry to open the local file (or reveal directory in Explorer)
+- **Quick Copy**: Copy remote conflict path and copy-pastable accept-local/accept-remote shell commands
+- **Per-file / Batch Accept**: Accept Local or Accept Remote for one conflict or all pending conflicts
+- **Handled-item Exclusion**: Batch accept skips conflicts already handled for the same conflict version
+
 ## Usage
 
 ### Creating a Sync Session
@@ -47,6 +54,11 @@ A VS Code extension for managing [Mutagen](https://mutagen.io/) file synchroniza
    - `docker://container/path` - Docker container path
 5. Choose sync mode and options
 
+> **About Alpha/Beta**: Sessions created via this extension use Local Folder as Alpha and Remote Path as Beta.
+> - **Two-Way Resolved** mode: conflicts are auto-resolved in favor of Alpha (Local)
+> - **One-Way** modes: sync only from Alpha (Local) to Beta (Remote)
+> - **Ignore VCS** "Default" option syncs VCS directories (.git, .svn, etc.)
+
 ### Managing Sessions
 - **Pause/Resume (Current Project Only)**: Pause/play button appears only when the session belongs to this window's workspace
 - **Cross-project Connect**: For foreign sessions, use `Connect In Current Window` or `Connect In New Window`
@@ -55,6 +67,20 @@ A VS Code extension for managing [Mutagen](https://mutagen.io/) file synchroniza
 - **Edit Configuration**: Right-click `Edit Configuration` (session will be recreated with a new ID)
 - **View Details**: Click the info icon to see full session details
 - **Connect Saved Session**: Click the plug button in the view title
+
+### Resolving Conflicts
+- Expand `Conflicts: N` under a session to browse individual conflict paths
+- Click a conflict item to open/reveal the local target
+- Right-click a conflict item for:
+  - `Accept Local` (no extra confirmation)
+  - `Accept Remote` (no extra confirmation)
+  - `Copy Conflict Remote Path` / `Copy Command: Accept ...`
+- Right-click the `Conflicts: N` group for:
+  - `Accept Local All`
+  - `Accept Remote All`
+- Batch accept asks for one confirmation, skips already handled unchanged conflicts, and auto-runs `reset + flush` on full success.
+
+> Note: Auto-apply currently supports SSH and local endpoints. Docker endpoints use copy-command fallback guidance.
 
 ## Configuration
 

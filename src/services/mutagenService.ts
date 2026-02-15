@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
-import { MutagenSession, DaemonStatus, CreateSessionOptions } from '../models/session';
+import { Conflict, MutagenSession, DaemonStatus, CreateSessionOptions } from '../models/session';
 import { Logger } from '../utils/logger';
 
 export class MutagenService {
@@ -154,6 +154,11 @@ export class MutagenService {
         } catch {
             return null;
         }
+    }
+
+    async getSessionConflicts(identifier: string): Promise<Conflict[]> {
+        const session = await this.getSession(identifier);
+        return session?.conflicts ?? [];
     }
 
     async createSession(

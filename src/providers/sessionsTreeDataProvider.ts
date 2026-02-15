@@ -1,18 +1,25 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { 
-    MutagenSession, 
-    toSessionSummary, 
-    getStatusIcon, 
-    getStatusLabel,
+import {
+    Conflict,
+    MutagenSession,
     formatFileSize,
-    SessionSummary
+    getStatusIcon,
+    getStatusLabel,
+    toSessionSummary
 } from '../models/session';
 import { MutagenService } from '../services/mutagenService';
-import { Logger } from '../utils/logger';
 import { isPathInCurrentWorkspace } from '../utils/config';
+import { Logger } from '../utils/logger';
 
-export type TreeItemType = 'session' | 'endpoint' | 'info' | 'error' | 'loading';
+export type TreeItemType =
+    | 'session'
+    | 'endpoint'
+    | 'info'
+    | 'error'
+    | 'loading'
+    | 'conflicts-group'
+    | 'conflict-file';
 
 export class SessionTreeItem extends vscode.TreeItem {
     constructor(
@@ -21,7 +28,8 @@ export class SessionTreeItem extends vscode.TreeItem {
         public readonly itemType: TreeItemType,
         public readonly session?: MutagenSession,
         public readonly parent?: SessionTreeItem,
-        itemId?: string
+        itemId?: string,
+        public readonly conflict?: Conflict
     ) {
         super(label, collapsibleState);
         // VSCode uses `id` to preserve expand/collapse state across refreshes
@@ -60,7 +68,7 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         try {
             const newSessions = await this.service.listSessions();
             const hasChanges = this.detectChanges(newSessions);
-            
+
             if (hasChanges) {
                 this.sessions = newSessions;
                 this.updateSessionMap(newSessions);
@@ -104,6 +112,15 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
     }
 
     private sessionChanged(oldSession: MutagenSession, newSession: MutagenSession): boolean {
+        const oldStagingReceived = oldSession.stagingProgress?.receivedSize
+            ?? oldSession.alpha.stagingProgress?.receivedSize
+            ?? oldSession.beta.stagingProgress?.receivedSize
+            ?? 0;
+        const newStagingReceived = newSession.stagingProgress?.receivedSize
+            ?? newSession.alpha.stagingProgress?.receivedSize
+            ?? newSession.beta.stagingProgress?.receivedSize
+            ?? 0;
+
         return (
             oldSession.status !== newSession.status ||
             oldSession.paused !== newSession.paused ||
@@ -111,9 +128,32 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
             oldSession.lastError !== newSession.lastError ||
             oldSession.alpha.connected !== newSession.alpha.connected ||
             oldSession.beta.connected !== newSession.beta.connected ||
-            (oldSession.conflicts?.length ?? 0) !== (newSession.conflicts?.length ?? 0) ||
-            (oldSession.stagingProgress?.receivedSize ?? 0) !== (newSession.stagingProgress?.receivedSize ?? 0)
+            this.getConflictFingerprint(oldSession) !== this.getConflictFingerprint(newSession) ||
+            oldStagingReceived !== newStagingReceived
         );
+    }
+
+    private getConflictFingerprint(session: MutagenSession): string {
+        const conflicts = session.conflicts ?? [];
+        return conflicts
+            .map(conflict => {
+                const serializeChanges = (changes: Conflict['alphaChanges']): string[] =>
+                    (changes ?? [])
+                        .map(change => {
+                            const oldEntry = change.old ? JSON.stringify(change.old) : 'null';
+                            const newEntry = change.new ? JSON.stringify(change.new) : 'null';
+                            return `${change.path}:${oldEntry}:${newEntry}`;
+                        })
+                        .sort();
+
+                return JSON.stringify({
+                    root: conflict.root,
+                    alphaChanges: serializeChanges(conflict.alphaChanges),
+                    betaChanges: serializeChanges(conflict.betaChanges)
+                });
+            })
+            .sort()
+            .join('|');
     }
 
     getSessions(): MutagenSession[] {
@@ -135,6 +175,10 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
 
         if (element.itemType === 'session' && element.session) {
             return this.getSessionDetails(element.session, element);
+        }
+
+        if (element.itemType === 'conflicts-group' && element.session) {
+            return this.getConflictItems(element.session, element);
         }
 
         return [];
@@ -179,7 +223,7 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         const summary = toSessionSummary(session);
         const displayName = summary.name;
         const isInCurrentWorkspace = isPathInCurrentWorkspace(summary.localPath);
-        
+
         const item = new SessionTreeItem(
             displayName,
             vscode.TreeItemCollapsibleState.Collapsed,
@@ -190,17 +234,17 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         );
 
         const statusLabel = getStatusLabel(session.status, session.paused);
-        
+
         item.iconPath = new vscode.ThemeIcon('vm');
-        
+
         const remoteInfo = summary.remoteHost || path.basename(summary.remotePath);
         item.description = remoteInfo;
-        
+
         const localPath = summary.localPath;
-        const remotePart = summary.remoteHost 
+        const remotePart = summary.remoteHost
             ? `${summary.remoteHost}:${summary.remotePath}`
             : summary.remotePath;
-        
+
         item.tooltip = new vscode.MarkdownString();
         item.tooltip.appendMarkdown(`**${displayName}**\n\n`);
         item.tooltip.appendMarkdown(`- **Status:** ${statusLabel}\n`);
@@ -208,12 +252,12 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         item.tooltip.appendMarkdown(`- **Remote:** \`${remotePart}\`\n`);
         item.tooltip.appendMarkdown(`- **Files:** ${summary.fileCount.toLocaleString()}\n`);
         item.tooltip.appendMarkdown(`- **Size:** ${formatFileSize(summary.totalSize)}\n`);
-        
+
         if (summary.hasErrors) {
-            item.tooltip.appendMarkdown(`\n⚠️ **Has Errors**\n`);
+            item.tooltip.appendMarkdown('\n⚠️ **Has Errors**\n');
         }
         if (summary.hasConflicts) {
-            item.tooltip.appendMarkdown(`\n⚡ **Has Conflicts**\n`);
+            item.tooltip.appendMarkdown('\n⚡ **Has Conflicts**\n');
         }
 
         if (isInCurrentWorkspace) {
@@ -233,6 +277,11 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         const statusLabel = getStatusLabel(session.status, session.paused);
         const successfulCycles = typeof session.successfulCycles === 'number' ? session.successfulCycles : 0;
 
+        // Determine local/remote by protocol, not by alpha/beta position
+        const isAlphaLocal = session.alpha.protocol === 'local';
+        const localEndpoint = isAlphaLocal ? session.alpha : session.beta;
+        const remoteEndpoint = isAlphaLocal ? session.beta : session.alpha;
+
         const statusItem = new SessionTreeItem(
             `Status: ${statusLabel}`,
             vscode.TreeItemCollapsibleState.None,
@@ -245,7 +294,7 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         items.push(statusItem);
 
         const localItem = new SessionTreeItem(
-            `Local: ${path.basename(session.alpha.path)}`,
+            `Local: ${path.basename(localEndpoint.path)}`,
             vscode.TreeItemCollapsibleState.None,
             'endpoint',
             session,
@@ -253,13 +302,13 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
             `${sid}-local`
         );
         localItem.iconPath = new vscode.ThemeIcon('folder');
-        localItem.description = session.alpha.connected ? 'Connected' : 'Disconnected';
-        localItem.tooltip = session.alpha.path;
+        localItem.description = localEndpoint.connected ? 'Connected' : 'Disconnected';
+        localItem.tooltip = localEndpoint.path;
         items.push(localItem);
 
-        const remoteLabel = session.beta.host 
-            ? `Remote: ${session.beta.host}` 
-            : `Remote: ${path.basename(session.beta.path)}`;
+        const remoteLabel = remoteEndpoint.host
+            ? `Remote: ${remoteEndpoint.host}`
+            : `Remote: ${path.basename(remoteEndpoint.path)}`;
         const remoteItem = new SessionTreeItem(
             remoteLabel,
             vscode.TreeItemCollapsibleState.None,
@@ -269,10 +318,10 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
             `${sid}-remote`
         );
         remoteItem.iconPath = new vscode.ThemeIcon('remote');
-        remoteItem.description = session.beta.connected ? 'Connected' : 'Disconnected';
-        remoteItem.tooltip = session.beta.host 
-            ? `${session.beta.host}:${session.beta.path}`
-            : session.beta.path;
+        remoteItem.description = remoteEndpoint.connected ? 'Connected' : 'Disconnected';
+        remoteItem.tooltip = remoteEndpoint.host
+            ? `${remoteEndpoint.host}:${remoteEndpoint.path}`
+            : remoteEndpoint.path;
         items.push(remoteItem);
 
         const filesItem = new SessionTreeItem(
@@ -301,13 +350,15 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         if (session.conflicts && session.conflicts.length > 0) {
             const conflictsItem = new SessionTreeItem(
                 `Conflicts: ${session.conflicts.length}`,
-                vscode.TreeItemCollapsibleState.None,
-                'error',
+                vscode.TreeItemCollapsibleState.Collapsed,
+                'conflicts-group',
                 session,
                 parent,
-                `${sid}-conflicts`
+                `${sid}-conflicts-group`
             );
             conflictsItem.iconPath = new vscode.ThemeIcon('warning');
+            conflictsItem.contextValue = 'conflicts-group';
+            conflictsItem.tooltip = 'Expand to view individual conflict paths';
             items.push(conflictsItem);
         }
 
@@ -326,5 +377,64 @@ export class SessionsTreeDataProvider implements vscode.TreeDataProvider<Session
         }
 
         return items;
+    }
+
+    private getConflictItems(session: MutagenSession, parent: SessionTreeItem): SessionTreeItem[] {
+        const conflicts = session.conflicts ?? [];
+        if (conflicts.length === 0) {
+            return [];
+        }
+
+        const isAlphaLocal = session.alpha.protocol === 'local';
+        const localRoot = path.resolve(isAlphaLocal ? session.alpha.path : session.beta.path);
+        const remoteEndpoint = isAlphaLocal ? session.beta : session.alpha;
+
+        return conflicts.map((conflict, index) => {
+            const conflictRoot = conflict.root || '.';
+            const conflictItem = new SessionTreeItem(
+                conflictRoot,
+                vscode.TreeItemCollapsibleState.None,
+                'conflict-file',
+                session,
+                parent,
+                `${session.identifier}-conflict-${index}-${encodeURIComponent(conflictRoot)}`,
+                conflict
+            );
+
+            conflictItem.iconPath = new vscode.ThemeIcon('warning');
+            conflictItem.contextValue = 'conflict-file';
+            conflictItem.command = {
+                command: 'mutagen.openConflictLocal',
+                title: 'Open Local Conflict',
+                arguments: [conflictItem]
+            };
+
+            const localPath = path.resolve(localRoot, ...this.splitConflictRoot(conflictRoot));
+            const remotePath = path.posix.resolve(
+                remoteEndpoint.path,
+                ...this.splitConflictRoot(conflictRoot)
+            );
+            const alphaChanges = conflict.alphaChanges?.length ?? 0;
+            const betaChanges = conflict.betaChanges?.length ?? 0;
+
+            conflictItem.description = `A:${alphaChanges} B:${betaChanges}`;
+            conflictItem.tooltip = new vscode.MarkdownString();
+            conflictItem.tooltip.appendMarkdown(`**Conflict:** \`${conflictRoot}\`\n\n`);
+            conflictItem.tooltip.appendMarkdown(`- **Local:** \`${localPath}\`\n`);
+            conflictItem.tooltip.appendMarkdown(
+                `- **Remote:** \`${remoteEndpoint.host ? `${remoteEndpoint.host}:${remotePath}` : remotePath}\`\n`
+            );
+            conflictItem.tooltip.appendMarkdown(`- **Alpha changes:** ${alphaChanges}\n`);
+            conflictItem.tooltip.appendMarkdown(`- **Beta changes:** ${betaChanges}\n`);
+
+            return conflictItem;
+        });
+    }
+
+    private splitConflictRoot(conflictRoot: string): string[] {
+        return conflictRoot
+            .replace(/\\/g, '/')
+            .split('/')
+            .filter(segment => segment.length > 0 && segment !== '.');
     }
 }
