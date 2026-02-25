@@ -2,7 +2,7 @@
   "name": "remote-mutagen",
   "displayName": "Remote-Mutagen",
   "description": "Remote-style management for Mutagen file synchronization sessions",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "AIR-hl",
   "icon": "resources/icons/vscode-mutagen-plugin-icon.png",
   "engines": {

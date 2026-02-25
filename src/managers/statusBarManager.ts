@@ -356,21 +356,36 @@ export class StatusBarManager {
         };
     }
 
+    /**
+     * Determines the transfer direction based on session status.
+     * 
+     * Important: Mutagen's staging status indicates which endpoint is RECEIVING data:
+     * - 'staging-alpha' means alpha is receiving (beta → alpha)
+     * - 'staging-beta' means beta is receiving (alpha → beta)
+     * 
+     * For upload/download from local perspective:
+     * - If local is alpha and status is 'staging-alpha', it's downloading (remote → local)
+     * - If local is alpha and status is 'staging-beta', it's uploading (local → remote)
+     */
     private resolveTransferDirection(session: MutagenSession, isLocalAlpha: boolean): TransferDirection | null {
+        // staging-alpha: alpha endpoint is receiving (beta → alpha)
         if (session.status === 'staging-alpha') {
-            return isLocalAlpha ? 'upload' : 'download';
+            return isLocalAlpha ? 'download' : 'upload';
         }
 
+        // staging-beta: beta endpoint is receiving (alpha → beta)
         if (session.status === 'staging-beta') {
-            return isLocalAlpha ? 'download' : 'upload';
-        }
-
-        if (session.alpha.stagingProgress && !session.beta.stagingProgress) {
             return isLocalAlpha ? 'upload' : 'download';
         }
 
-        if (session.beta.stagingProgress && !session.alpha.stagingProgress) {
+        // alpha.stagingProgress exists: alpha is receiving (beta → alpha)
+        if (session.alpha.stagingProgress && !session.beta.stagingProgress) {
             return isLocalAlpha ? 'download' : 'upload';
+        }
+
+        // beta.stagingProgress exists: beta is receiving (alpha → beta)
+        if (session.beta.stagingProgress && !session.alpha.stagingProgress) {
+            return isLocalAlpha ? 'upload' : 'download';
         }
 
         return null;
