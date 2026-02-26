@@ -154,6 +154,21 @@ export class CommandManager {
             return;
         }
 
+        // Check for duplicate configuration
+        const profiles = this.profileService.listProfiles();
+        const duplicateProfile = profiles.find(p => 
+            p.localPath === localPath && p.remotePath === remotePath
+        );
+        
+        if (duplicateProfile) {
+            vscode.window.showErrorMessage(
+                `A session configuration already exists for this local and remote path combination. ` +
+                `Profile name: "${duplicateProfile.name}". ` +
+                `Please use "Connect Saved Session" to restore it, or modify the existing configuration.`
+            );
+            return;
+        }
+
         const sessionNameInput = await vscode.window.showInputBox({
             prompt: 'Enter a name for this sync session (optional)',
             placeHolder: 'my-project'
@@ -260,23 +275,39 @@ export class CommandManager {
         }
 
         const confirm = await vscode.window.showWarningMessage(
-            `Are you sure you want to terminate session "${item.session.name}"?`,
+            `Are you sure delete session "${item.session.name}"?`,
             { modal: true },
-            'Terminate'
+            'Delete'
         );
 
-        if (confirm !== 'Terminate') {
+        if (confirm !== 'Delete') {
             return;
         }
 
         try {
             await this.service.terminateSession(item.session.identifier);
             this.clearHandledConflicts(item.session.identifier);
+            
+            // Delete associated connection profile(s)
+            const profiles = this.profileService.listProfiles();
+            const localPath = this.getLocalSessionPath(item.session);
+            const remoteEndpoint = item.session.alpha.protocol === 'local' ? item.session.beta : item.session.alpha;
+            const remotePath = this.formatRemoteEndpoint(remoteEndpoint);
+            
+            for (const profile of profiles) {
+                // Match by session identifier or by exact paths
+                if (profile.lastSessionIdentifier === item.session.identifier ||
+                    (localPath && profile.localPath === localPath && profile.remotePath === remotePath)) {
+                    await this.profileService.removeProfile(profile.id);
+                    Logger.info(`Deleted connection profile "${profile.name}" associated with terminated session`);
+                }
+            }
+            
             vscode.window.showInformationMessage(`Session "${item.session.name}" terminated`);
             await this.refresh();
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            vscode.window.showErrorMessage(`Failed to terminate session: ${message}`);
+            vscode.window.showErrorMessage(`Failed to delete session: ${message}`);
         }
     }
 
